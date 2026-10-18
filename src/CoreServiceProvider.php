@@ -138,7 +138,7 @@ final class CoreServiceProvider extends PackageServiceProvider
 
     protected function registerCustomerIndexer(): void
     {
-        $userModel = (string) config('auth.providers.users.model');
+        $userModel = (string) config('shopper.models.customer');
 
         if ($userModel !== '' && blank(config('shopper.search.indexers.'.$userModel))) {
             config(['shopper.search.indexers.'.$userModel => Search\CustomerIndexer::class]);

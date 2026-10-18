@@ -42,7 +42,7 @@ class Geolocation extends Model implements GeolocationContract
      */
     public function user(): BelongsTo
     {
-        return $this->belongsTo(config('auth.providers.users.model'), 'user_id');
+        return $this->belongsTo(config('shopper.models.customer'), 'user_id');
     }
 
     /**
