@@ -120,7 +120,7 @@ trait HasStock
         if ($date === null) {
             return (int) $this->stockLevels()
                 ->where('inventory_id', $inventoryId)
-                ->value('quantity');
+                ->toBase()->value('quantity');
         }
 
         return (int) $this->inventoryHistories()
@@ -226,12 +226,12 @@ trait HasStock
             'inventory_id' => $inventoryId,
         ];
 
-        $quantity = StockLevel::query()->where($constraint)->lockForUpdate()->value('quantity');
+        $quantity = StockLevel::query()->where($constraint)->lockForUpdate()->toBase()->value('quantity');
 
         if ($quantity === null) {
             StockLevel::query()->insertOrIgnore([...$constraint, 'quantity' => 0, 'created_at' => now(), 'updated_at' => now()]);
 
-            $quantity = StockLevel::query()->where($constraint)->lockForUpdate()->value('quantity');
+            $quantity = StockLevel::query()->where($constraint)->lockForUpdate()->toBase()->value('quantity');
         }
 
         return (int) $quantity;
