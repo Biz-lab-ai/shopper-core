@@ -13,7 +13,7 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
+use Shopper\Core\Contracts\StockTransactionRunner;
 use Shopper\Core\Exceptions\LazyStockLoadingException;
 use Shopper\Core\Models\InventoryHistory;
 use Shopper\Core\Models\StockLevel;
@@ -153,6 +153,12 @@ trait HasStock
         return $this->createStockMutation(-1 * abs($quantity), $inventoryId, $oldQuantity, $event, $description, $userId, $reference);
     }
 
+    /**
+     * The final clean-up of a stockable that is going away: every non-zero
+     * inventory is first zeroed by a ledger movement, so the disappearance
+     * is visible to whoever follows the ledger, then the ledger and the
+     * snapshot rows are erased.
+     */
     public function clearStock(
         ?int $inventoryId = null,
         ?int $newQuantity = null,
@@ -162,16 +168,25 @@ trait HasStock
         ?int $userId = null,
         ?Model $reference = null,
     ): bool {
-        $this->inventoryHistories()->delete();
-        $this->stockLevels()->delete();
+        return resolve(StockTransactionRunner::class)->run(function () use ($inventoryId, $newQuantity, $oldQuantity, $event, $description, $userId, $reference): bool {
+            $this->zeroStockLevels(__('shopper-core::status.stock.cleared'));
 
-        if ($inventoryId && $newQuantity) {
-            $this->createStockMutation($newQuantity, $inventoryId, $oldQuantity, $event, $description, $userId, $reference);
-        }
+            $this->inventoryHistories()->delete();
+            $this->stockLevels()->delete();
 
-        return true;
+            if ($inventoryId && $newQuantity) {
+                $this->createStockMutation($newQuantity, $inventoryId, $oldQuantity, $event, $description, $userId, $reference);
+            }
+
+            return true;
+        });
     }
 
+    /**
+     * Set the absolute quantity of one inventory. The current quantity of
+     * that inventory is read under the row lock inside the transaction, so
+     * the delta is computed against the latest committed value.
+     */
     public function setStock(
         int $newQuantity,
         int $inventoryId,
@@ -181,14 +196,45 @@ trait HasStock
         ?int $userId = null,
         ?Model $reference = null,
     ): ?InventoryHistory {
-        $currentStock = $this->stock;
-        $deltaStock = $newQuantity - $currentStock;
+        $stockable = static::class;
+        $key = $this->getKey();
+        $referenceType = $reference === null ? null : $reference::class;
+        $referenceKey = $reference?->getKey();
 
-        if (! $deltaStock) {
-            return null;
+        return resolve(StockTransactionRunner::class)->retry(static function () use ($stockable, $key, $newQuantity, $inventoryId, $oldQuantity, $event, $description, $userId, $referenceType, $referenceKey): ?InventoryHistory {
+            $model = static::loadStockable($stockable, $key);
+            $deltaStock = $newQuantity - $model->lockStockLevel($inventoryId);
+
+            if (! $deltaStock) {
+                return null;
+            }
+
+            return $model->createStockMutation($deltaStock, $inventoryId, $oldQuantity, $event, $description, $userId, static::loadReference($referenceType, $referenceKey));
+        });
+    }
+
+    /**
+     * Lock the snapshot row of one inventory as the first touch and return
+     * its quantity. A missing row is created at zero first, so the lock is
+     * always taken on a row; the read sees the latest committed version.
+     */
+    public function lockStockLevel(int $inventoryId): int
+    {
+        $constraint = [
+            'stockable_type' => $this->getMorphClass(),
+            'stockable_id' => $this->getKey(),
+            'inventory_id' => $inventoryId,
+        ];
+
+        $quantity = StockLevel::query()->where($constraint)->lockForUpdate()->value('quantity');
+
+        if ($quantity === null) {
+            StockLevel::query()->insertOrIgnore([...$constraint, 'quantity' => 0, 'created_at' => now(), 'updated_at' => now()]);
+
+            $quantity = StockLevel::query()->where($constraint)->lockForUpdate()->value('quantity');
         }
 
-        return $this->createStockMutation($deltaStock, $inventoryId, $oldQuantity, $event, $description, $userId, $reference);
+        return (int) $quantity;
     }
 
     public function createStockMutation(
@@ -214,13 +260,34 @@ trait HasStock
             $createArguments['reference_id'] = $reference->getKey();
         }
 
-        return DB::transaction(function () use ($createArguments, $inventoryId, $quantity): InventoryHistory {
-            $history = $this->inventoryHistories()->create($createArguments);
+        $stockable = static::class;
+        $key = $this->getKey();
 
-            $this->applyToStockLevel($inventoryId, $quantity);
+        return resolve(StockTransactionRunner::class)->retry(static function () use ($stockable, $key, $createArguments, $inventoryId, $quantity): InventoryHistory {
+            $model = static::loadStockable($stockable, $key);
+            $history = $model->inventoryHistories()->create($createArguments);
+
+            $model->applyToStockLevel($inventoryId, $quantity);
 
             return $history;
         });
+    }
+
+    /**
+     * Zero every non-zero inventory of this stockable with one movement each,
+     * the quantity read under the row lock.
+     */
+    public function zeroStockLevels(?string $event = null): void
+    {
+        $inventoryIds = $this->stockLevels()->where('quantity', '!=', 0)->pluck('inventory_id');
+
+        foreach ($inventoryIds as $inventoryId) {
+            $quantity = $this->lockStockLevel((int) $inventoryId);
+
+            if ($quantity !== 0) {
+                $this->createStockMutation(-1 * $quantity, (int) $inventoryId, $quantity, $event);
+            }
+        }
     }
 
     /**
@@ -237,6 +304,32 @@ trait HasStock
     public function stockLevels(): MorphMany
     {
         return $this->morphMany(StockLevel::class, 'stockable');
+    }
+
+    /**
+     * A repeatable command loads its stockable by key in every attempt,
+     * soft deleted rows included: nothing it uses survives a rollback.
+     *
+     * @param  class-string<Model>  $stockable
+     */
+    protected static function loadStockable(string $stockable, int|string $key): Model
+    {
+        /** @var Model $model */
+        $model = (new $stockable)->newQueryWithoutScopes()->findOrFail($key);
+
+        return $model;
+    }
+
+    /**
+     * @param  class-string<Model>|null  $referenceType
+     */
+    protected static function loadReference(?string $referenceType, int|string|null $key): ?Model
+    {
+        if ($referenceType === null || $key === null) {
+            return null;
+        }
+
+        return (new $referenceType)->newQueryWithoutScopes()->findOrFail($key);
     }
 
     /**

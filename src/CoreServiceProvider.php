@@ -19,6 +19,7 @@ use Shopper\Core\Contracts\ProductPriceIndex;
 use Shopper\Core\Contracts\QuantityRuleResolver;
 use Shopper\Core\Contracts\StockAllocator;
 use Shopper\Core\Contracts\StockReserver;
+use Shopper\Core\Contracts\StockTransactionRunner;
 use Shopper\Core\Contracts\TaxCalculationProvider;
 use Shopper\Core\Contracts\WebhookPayloadSerializer;
 use Shopper\Core\Import\ImportManager;
@@ -48,6 +49,7 @@ use Shopper\Core\Payments\NullPaymentSessionGateway;
 use Shopper\Core\Pricing\CatalogPriceResolver;
 use Shopper\Core\Pricing\CatalogProductPriceIndex;
 use Shopper\Core\Pricing\DefaultQuantityRuleResolver;
+use Shopper\Core\Stock\DatabaseStockTransactionRunner;
 use Shopper\Core\Stock\DefaultInventoryResolver;
 use Shopper\Core\Stock\LockingStockReserver;
 use Shopper\Core\Stock\PriorityStockAllocator;
@@ -86,6 +88,7 @@ final class CoreServiceProvider extends PackageServiceProvider
         'core',
         'orders',
         'search',
+        'stock',
         'webhooks',
     ];
 
@@ -124,6 +127,9 @@ final class CoreServiceProvider extends PackageServiceProvider
         $this->app->scoped(TaxCalculationProvider::class, SystemTaxProvider::class);
         $this->app->scoped(TaxCalculator::class);
         $this->app->singletonIf(PaymentSessionGateway::class, NullPaymentSessionGateway::class);
+        $this->app->bind(StockTransactionRunner::class, fn ($app): StockTransactionRunner => $app->make(
+            config('shopper.stock.transaction_runner', DatabaseStockTransactionRunner::class),
+        ));
 
         $this->registerConfigFiles();
         $this->registerDatabase();

@@ -22,6 +22,7 @@ use Illuminate\Support\Collection as SupportCollection;
 use Shopper\Core\Contracts\HasReviews;
 use Shopper\Core\Contracts\Media\HasMedia as ShopperHasMedia;
 use Shopper\Core\Contracts\Priceable;
+use Shopper\Core\Contracts\StockTransactionRunner;
 use Shopper\Core\Database\Factories\ProductFactory;
 use Shopper\Core\Enum\Dimension\Length;
 use Shopper\Core\Enum\Dimension\Volume;
@@ -108,13 +109,30 @@ class Product extends Model implements HasReviews, Priceable, ProductContract, S
     use HasStock;
     use InteractsWithReviews;
     use Searchable;
-    use SoftDeletes;
+    use SoftDeletes {
+        forceDelete as private forceDeleteThroughSoftDeletes;
+    }
 
     protected $guarded = [];
 
     public static function configuredClass(): string
     {
         return config('shopper.models.product', static::class);
+    }
+
+    /**
+     * The delete observers move stock, so the delete runs in the stock
+     * transaction. A conflict is thrown, never retried on this instance:
+     * StockedModelDeletion repeats a delete by id.
+     */
+    public function delete(): ?bool
+    {
+        return resolve(StockTransactionRunner::class)->run(fn (): ?bool => parent::delete());
+    }
+
+    public function forceDelete(): ?bool
+    {
+        return resolve(StockTransactionRunner::class)->run(fn (): ?bool => $this->forceDeleteThroughSoftDeletes());
     }
 
     public function getTable(): string

@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Shopper\Core\Contracts\Media\HasMedia as ShopperHasMedia;
 use Shopper\Core\Contracts\Priceable;
+use Shopper\Core\Contracts\StockTransactionRunner;
 use Shopper\Core\Database\Factories\ProductVariantFactory;
 use Shopper\Core\Enum\Dimension\Length;
 use Shopper\Core\Enum\Dimension\Volume;
@@ -72,6 +73,16 @@ class ProductVariant extends Model implements Priceable, ProductVariantContract,
     public static function configuredClass(): string
     {
         return config('shopper.models.variant', static::class);
+    }
+
+    /**
+     * The delete observer clears the stock, so the delete runs in the stock
+     * transaction. A conflict is thrown, never retried on this instance:
+     * StockedModelDeletion repeats a delete by id.
+     */
+    public function delete(): ?bool
+    {
+        return resolve(StockTransactionRunner::class)->run(fn (): ?bool => parent::delete());
     }
 
     public function getTable(): string

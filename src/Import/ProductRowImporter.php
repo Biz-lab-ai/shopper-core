@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Shopper\Core\Import;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\DB;
+use Shopper\Core\Contracts\StockTransactionRunner;
 use Shopper\Core\Enum\Dimension\Weight;
 use Shopper\Core\Enum\FieldType;
 use Shopper\Core\Enum\ProductType;
@@ -36,27 +36,36 @@ final class ProductRowImporter
             throw new ProductImportException("Product [{$row->handle}] has no name.");
         }
 
+        // ProductRow is a readonly value, and every attempt runs on a fresh
+        // importer, so a retried conflict never reuses a rolled back cache
+        $productKey = resolve(StockTransactionRunner::class)->retry(
+            static fn (): mixed => app(self::class)->attempt($row),
+        );
+
         /** @var Model&ProductContract $product */
-        $product = DB::transaction(function () use ($row): ProductContract {
-            $product = $this->upsertProduct($row);
-
-            $this->syncCategories($product, $row->categories);
-            $this->syncTags($product, $row->tags);
-
-            if ($row->isStandard()) {
-                $this->applyStandardData($product, $row->variants[0] ?? null);
-            } else {
-                foreach ($row->variants as $variant) {
-                    $this->upsertVariant($product, $variant, $row);
-                }
-            }
-
-            return $product;
-        });
+        $product = resolve(ProductContract::class)::query()->findOrFail($productKey);
 
         $this->dispatchImageDownloads($product, $row);
 
         return $product;
+    }
+
+    private function attempt(ProductRow $row): mixed
+    {
+        $product = $this->upsertProduct($row);
+
+        $this->syncCategories($product, $row->categories);
+        $this->syncTags($product, $row->tags);
+
+        if ($row->isStandard()) {
+            $this->applyStandardData($product, $row->variants[0] ?? null);
+        } else {
+            foreach ($row->variants as $variant) {
+                $this->upsertVariant($product, $variant, $row);
+            }
+        }
+
+        return $product->getKey();
     }
 
     /**

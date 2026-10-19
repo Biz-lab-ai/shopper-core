@@ -19,6 +19,12 @@ final class ReconcileStockLevelsCommand extends Command
 
     public function handle(): int
     {
+        if ($this->option('fix') && ! config('shopper.stock.reconcile_fix', true)) {
+            $this->components->error('Rewriting the snapshot is disabled by shopper.stock.reconcile_fix.');
+
+            return self::FAILURE;
+        }
+
         $ledger = DB::table(shopper_table('inventory_histories'))
             ->selectRaw('stockable_type, stockable_id, inventory_id, SUM(quantity) as quantity')
             ->groupBy('stockable_type', 'stockable_id', 'inventory_id')

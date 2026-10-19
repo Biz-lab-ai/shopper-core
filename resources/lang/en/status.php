@@ -59,6 +59,7 @@ return [
     'stock' => [
         'reserved' => 'Reserved for order',
         'cancelled' => 'Released from cancelled order',
+        'cleared' => 'Cleared on removal',
     ],
 
     'discount' => [

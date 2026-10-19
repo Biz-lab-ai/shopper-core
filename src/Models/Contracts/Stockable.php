@@ -66,6 +66,10 @@ interface Stockable
         ?Model $reference = null,
     ): ?InventoryHistory;
 
+    public function lockStockLevel(int $inventoryId): int;
+
+    public function zeroStockLevels(?string $event = null): void;
+
     public function createStockMutation(
         int $quantity,
         int $inventoryId,
